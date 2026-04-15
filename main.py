@@ -1,5 +1,3 @@
-
-
 """
 SmartTravel Builder
 """
@@ -22,7 +20,30 @@ from attractions import get_attractions
 from weather import get_weather
 from filters import get_filter_options
 
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
 app = FastAPI(title="SmartTravel Builder")
+# ============= MIDDLEWARE ДЛЯ RENDER =============
+import os
+
+class RenderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Логирование для отладки
+        print(f"[RENDER] {request.method} {request.url.path}")
+        
+        # Проверяем заголовок X-Forwarded-Proto от Render
+        forwarded_proto = request.headers.get("X-Forwarded-Proto")
+        if forwarded_proto and forwarded_proto == "http":
+            # Перенаправляем на HTTPS
+            url = request.url.replace(scheme="https")
+            return RedirectResponse(url, status_code=301)
+        
+        response = await call_next(request)
+        return response
+
+app.add_middleware(RenderMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 USERS = {}
@@ -2596,8 +2617,8 @@ async def login(username: str = Form(...), password: str = Form(...)):
     hashed = hash_password(password)
     if username in USERS and USERS[username]["password"] == hashed:
         token = create_session_token(username)
-        resp = RedirectResponse(url="/", status_code=303)
-        resp.set_cookie(key="session", value=token, httponly=True, max_age=86400)
+        resp = RedirectResponse(url="/", status_code=302)
+        resp.set_cookie(key="session", value=token, httponly=True, max_age=86400, secure=False, samesite="lax")
         return resp
     return HTMLResponse('''
 <!DOCTYPE html>
@@ -2717,8 +2738,8 @@ a{color:#667eea;text-decoration:none}
     REFERRAL_LINKS[REFERRAL_CODES[username]] = username
     
     token = create_session_token(username)
-    resp = RedirectResponse(url="/", status_code=303)
-    resp.set_cookie(key="session", value=token, httponly=True, max_age=86400)
+    resp = RedirectResponse(url="/", status_code=302)
+    resp.set_cookie(key="session", value=token, httponly=True, max_age=86400, secure=False, samesite="lax")
     return resp
 
 
@@ -2729,11 +2750,16 @@ async def logout(session: str = Cookie(None)):
     resp.delete_cookie("session")
     return resp
 
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    return HTMLResponse(content="", status_code=200)
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))
     print("=" * 50)
-    print("SmartTravel Builder запущен")
-    print("http://127.0.0.1:8000")
+    print("SmartTravel Builder запущен на Render")
+    print(f"http://0.0.0.0:{port}")
     print("=" * 50)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)
