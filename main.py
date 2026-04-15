@@ -1,11 +1,10 @@
 """
-SmartTravel Builder - Исправленная версия для Render
+SmartTravel Builder
 """
 
 from fastapi import FastAPI, Request, Form, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime, timedelta
 import json
 import os
@@ -21,24 +20,9 @@ from attractions import get_attractions
 from weather import get_weather
 from filters import get_filter_options
 
-# ============= ИНИЦИАЛИЗАЦИЯ =============
 app = FastAPI(title="SmartTravel Builder")
-
-# ============= MIDDLEWARE ДЛЯ RENDER =============
-class RenderMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        print(f"[RENDER] {request.method} {request.url.path}")
-        forwarded_proto = request.headers.get("X-Forwarded-Proto")
-        if forwarded_proto and forwarded_proto == "http":
-            url = request.url.replace(scheme="https")
-            return RedirectResponse(url, status_code=301)
-        response = await call_next(request)
-        return response
-
-app.add_middleware(RenderMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ============= ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =============
 USERS = {}
 SESSIONS = {}
 BOOKINGS = {}
@@ -178,6 +162,7 @@ def get_map_script(city_data, hotels, attractions):
 CITY_OPTIONS = get_city_options()
 AIRPORTS_OPTIONS = ''.join([f'<option value="{a["code"]}">{a["name"]}</option>' for a in AIRPORTS_DEPARTURE])
 FILTERS_OPTIONS = get_filter_options()
+
 MAIN_PAGE = f'''
 <!DOCTYPE html>
 <html lang="ru">
@@ -929,8 +914,6 @@ MAIN_PAGE = f'''
 </html>
 '''
 
-# ============= ОСНОВНЫЕ ЭНДПОИНТЫ =============
-
 @app.get("/")
 async def home():
     return HTMLResponse(content=MAIN_PAGE)
@@ -966,343 +949,6 @@ async def support_message(data: dict, session: str = Cookie(None)):
     
     return {"reply": reply}
 
-# ============= API ДЛЯ ОТЗЫВОВ =============
-
-@app.post("/api/add_review")
-async def add_review(data: dict, session: str = Cookie(None)):
-    """Добавление отзыва об отеле"""
-    username = get_current_user(session)
-    if not username:
-        return {"success": False, "error": "Не авторизован"}
-    
-    hotel_id = data.get("hotel_id")
-    rating = data.get("rating")
-    text = data.get("text")
-    
-    if hotel_id is None or not rating or not text:
-        return {"success": False, "error": "Заполните все поля"}
-    
-    if rating < 1 or rating > 5:
-        return {"success": False, "error": "Оценка должна быть от 1 до 5"}
-    
-    hotel_id_str = str(hotel_id)
-    
-    if hotel_id_str not in REVIEWS:
-        REVIEWS[hotel_id_str] = []
-    
-    REVIEWS[hotel_id_str].append({
-        "username": username,
-        "rating": rating,
-        "text": text,
-        "date": datetime.now().strftime("%d.%m.%Y")
-    })
-    
-    return {"success": True}
-
-@app.get("/api/get_reviews/{hotel_id}")
-async def get_reviews(hotel_id: str):
-    """Получение отзывов об отеле"""
-    hotel_reviews = REVIEWS.get(hotel_id, [])
-    return {"success": True, "reviews": hotel_reviews}
-
-# ============= API ДЛЯ ИЗБРАННОГО И УВЕДОМЛЕНИЙ =============
-
-@app.post("/api/add_favorite")
-async def add_favorite(data: dict, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username:
-        if username not in FAVORITES:
-            FAVORITES[username] = []
-        FAVORITES[username].append({"hotel_id": data.get("hotel_id"), "hotel_name": data.get("hotel_name"), "city": data.get("city"), "price": data.get("price")})
-    return {"success": True}
-
-@app.post("/api/remove_favorite")
-async def remove_favorite(data: dict, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username and username in FAVORITES:
-        FAVORITES[username] = [f for f in FAVORITES[username] if f["hotel_id"] != data.get("hotel_id")]
-    return {"success": True}
-
-@app.post("/api/mark_notification_read")
-async def mark_notification_read(data: dict, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username and username in NOTIFICATIONS:
-        for n in NOTIFICATIONS[username]:
-            if n["id"] == data.get("notification_id"):
-                n["read"] = True
-    return {"success": True}
-
-@app.post("/api/save_booking")
-async def save_booking(data: dict, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username:
-        if username not in BOOKINGS:
-            BOOKINGS[username] = []
-        BOOKINGS[username].append(data)
-        if username not in NOTIFICATIONS:
-            NOTIFICATIONS[username] = []
-        NOTIFICATIONS[username].append({"id": len(NOTIFICATIONS[username]) + 1, "icon": "✅", "title": "Тур успешно забронирован", "text": f"Ваш тур в {data['destination']} на {data['nights']} ночей подтвержден.", "date": datetime.now().strftime("%d.%m.%Y %H:%M"), "read": False})
-    return {"success": True}
-
-# ============= ПЛАТЁЖНАЯ СИСТЕМА =============
-
-@app.post("/api/initiate_payment")
-async def initiate_payment(data: dict, session: str = Cookie(None)):
-    """Имитация инициализации платежа"""
-    username = get_current_user(session)
-    if not username:
-        return {"success": False, "error": "Не авторизован"}
-    
-    booking_id = data.get("booking_id")
-    amount = data.get("amount")
-    method = data.get("method")
-    
-    if not booking_id or not amount:
-        return {"success": False, "error": "Не указаны данные платежа"}
-    
-    payment_id = secrets.token_hex(8)
-    
-    PAYMENTS[payment_id] = {
-        "booking_id": booking_id,
-        "amount": amount,
-        "method": method,
-        "status": "pending",
-        "username": username,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    return {"success": True, "payment_id": payment_id, "method": method}
-
-@app.post("/api/confirm_payment")
-async def confirm_payment(data: dict, session: str = Cookie(None)):
-    """Подтверждение оплаты (демо-режим)"""
-    username = get_current_user(session)
-    if not username:
-        return {"success": False, "error": "Не авторизован"}
-    
-    payment_id = data.get("payment_id")
-    
-    if not payment_id or payment_id not in PAYMENTS:
-        return {"success": False, "error": "Платёж не найден"}
-    
-    payment = PAYMENTS[payment_id]
-    payment["status"] = "completed"
-    payment["completed_at"] = datetime.now().isoformat()
-    
-    if username not in NOTIFICATIONS:
-        NOTIFICATIONS[username] = []
-    NOTIFICATIONS[username].append({
-        "id": len(NOTIFICATIONS[username]) + 1,
-        "icon": "💳",
-        "title": "Оплата прошла успешно",
-        "text": f"Оплата тура на сумму {payment['amount']:,} ₽ подтверждена. Демо-режим.",
-        "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-        "read": False
-    })
-    
-    if username not in BOOKINGS:
-        BOOKINGS[username] = []
-    BOOKINGS[username].append({
-        "destination": data.get("destination", ""),
-        "nights": data.get("nights", 0),
-        "start_date": data.get("start_date", ""),
-        "end_date": data.get("end_date", ""),
-        "hotel": data.get("hotel", ""),
-        "flight_there": data.get("flight_there", ""),
-        "flight_back": data.get("flight_back", ""),
-        "total_price": payment["amount"],
-        "payment_id": payment_id,
-        "payment_status": "completed"
-    })
-    
-    return {"success": True, "message": "Оплата успешно завершена (демо-режим)"}
-
-@app.get("/api/get_payment_status/{payment_id}")
-async def get_payment_status(payment_id: str, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if not username:
-        return {"success": False, "error": "Не авторизован"}
-    
-    if payment_id not in PAYMENTS:
-        return {"success": False, "error": "Платёж не найден"}
-    
-    payment = PAYMENTS[payment_id]
-    if payment["username"] != username:
-        return {"success": False, "error": "Нет доступа"}
-    
-    return {"success": True, "status": payment["status"]}
-# ============= ПРОФИЛЬ =============
-
-@app.get("/profile")
-async def profile(session: str = Cookie(None)):
-    username = get_current_user(session)
-    if not username:
-        return RedirectResponse(url="/login", status_code=302)
-    
-    user_data = USERS.get(username, {})
-    avatar = user_data.get("avatar", "👤")
-    full_name = user_data.get("full_name", username)
-    email = user_data.get("email", "")
-    phone = user_data.get("phone", "")
-    bookings = BOOKINGS.get(username, [])
-    favorites = FAVORITES.get(username, [])
-    notifications = NOTIFICATIONS.get(username, [])
-    balance = USER_BALANCES.get(username, 0)
-    referral_link = get_referral_link(username)
-    bookings.reverse()
-    
-    bookings_html = "".join(f'<div class="booking"><div><strong>✈️ {b["destination"]}</strong> | 📅 {b["nights"]} ночей | 💰 {b["total_price"]:,} ₽</div><div>🏨 {b["hotel"]} | ✈️ {b["flight_there"]} → {b["flight_back"]}</div><div>📅 {b["start_date"]} - {b["end_date"]}</div><div class="status">Подтверждено</div></div>' for b in bookings) or "<p>Нет бронирований</p>"
-    favorites_html = "".join(f'<div class="fav"><div><strong>🏨 {fav["hotel_name"]}</strong> ({fav["city"]}) - 💰 {fav["price"]:,} ₽/ночь</div><button onclick="removeFavorite({fav["hotel_id"]})">Удалить</button></div>' for fav in favorites) or "<p>Нет избранных</p>"
-    notifications_html = "".join(f'<div class="notif {"" if n.get("read") else "unread"}" onclick="markAsRead({n["id"]})"><div>{n["icon"]}</div><div><div>{n["title"]}</div><div>{n["text"]}</div><div>{n["date"]}</div></div></div>' for n in notifications[:5]) or "<p>Нет уведомлений</p>"
-    
-    return HTMLResponse(content=f'''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Личный кабинет</title>
-    <style>
-        *{{margin:0;padding:0;box-sizing:border-box}}
-        :root{{--bg:#f3f5f9;--card:white;--text:#5a6e8a;--border:#eef2f7}}
-        body.dark{{--bg:#1a1a2e;--card:#1e1e2e;--text:#e0e0e0}}
-        body{{font-family:Segoe UI;background:var(--bg);padding:20px;transition:.3s}}
-        .container{{max-width:1200px;margin:0 auto}}
-        .navbar{{background:var(--card);padding:15px 30px;border-radius:60px;margin-bottom:30px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}}
-        .profile-grid{{display:grid;grid-template-columns:280px 1fr;gap:24px}}
-        .sidebar{{background:var(--card);border-radius:24px;padding:24px}}
-        .avatar{{width:100px;height:100px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:3rem;margin:0 auto 15px;cursor:pointer}}
-        .menu-item{{padding:12px 15px;cursor:pointer;border-radius:12px;margin-bottom:5px;color:var(--text)}}
-        .menu-item:hover,.menu-item.active{{background:var(--border)}}
-        .main-content{{background:var(--card);border-radius:24px;padding:30px}}
-        .tab{{display:none}}
-        .tab.active{{display:block}}
-        .booking,.fav,.notif{{background:var(--border);border-radius:16px;padding:15px;margin-bottom:15px}}
-        .status{{background:#e8f5e9;color:#2e7d32;padding:4px 12px;border-radius:20px;display:inline-block;margin-top:10px}}
-        .unread{{background:#eef2ff;border-left:4px solid #667eea}}
-        .referral-box{{background:linear-gradient(135deg,#667eea20 0%,#764ba220 100%);border-radius:16px;padding:15px;margin-top:15px;text-align:center}}
-        .referral-code{{background:var(--card);padding:10px;border-radius:12px;font-family:monospace;font-size:1.2rem;margin:10px 0;word-break:break-all}}
-        .copy-btn{{background:#667eea;color:white;border:none;padding:8px 20px;border-radius:40px;cursor:pointer}}
-        .balance{{background:#e8f5e9;padding:10px;border-radius:12px;text-align:center;margin-bottom:15px;color:#2e7d32;font-weight:bold}}
-        
-        @media (max-width: 768px) {{
-            .profile-grid{{grid-template-columns:1fr;gap:16px}}
-            .navbar{{flex-direction:column;text-align:center}}
-            .sidebar{{padding:16px}}
-            .main-content{{padding:20px}}
-            .avatar{{width:80px;height:80px;font-size:2.5rem}}
-            .menu-item{{padding:10px 12px;font-size:0.9rem}}
-            .booking,.fav,.notif{{padding:12px;font-size:0.85rem}}
-        }}
-        @media (max-width: 480px) {{
-            body{{padding:12px}}
-            .navbar{{padding:12px 20px}}
-            .main-content{{padding:16px}}
-        }}
-    </style>
-</head>
-<body>
-<div class="container">
-    <div class="navbar">
-        <div>SmartTravel</div>
-        <div>
-            <button onclick="toggleTheme()">Тёмная</button>
-            <a href="/" style="margin-left:15px;">Главная</a>
-            <a href="/logout" style="margin-left:15px;color:#dc2626">Выйти</a>
-        </div>
-    </div>
-    <div class="profile-grid">
-        <div class="sidebar">
-            <div class="avatar" onclick="showAvatar()">{avatar}</div>
-            <div><div>{full_name}</div><div>{email}</div></div>
-            <div class="balance">Баланс бонусов: {balance} ₽</div>
-            <div class="menu">
-                <div class="menu-item active" onclick="switchTab('bookings')">Бронирования</div>
-                <div class="menu-item" onclick="switchTab('favorites')">Избранное</div>
-                <div class="menu-item" onclick="switchTab('notifications')">Уведомления</div>
-                <div class="menu-item" onclick="switchTab('referral')">Реферальная система</div>
-                <div class="menu-item" onclick="switchTab('profile')">Настройки</div>
-            </div>
-        </div>
-        <div class="main-content">
-            <div id="bookingsTab" class="tab active"><h2>Бронирования</h2>{bookings_html}</div>
-            <div id="favoritesTab" class="tab"><h2>Избранное</h2>{favorites_html}</div>
-            <div id="notificationsTab" class="tab"><h2>Уведомления</h2>{notifications_html}</div>
-            <div id="referralTab" class="tab">
-                <h2>Реферальная система</h2>
-                <div class="referral-box">
-                    <p>Приглашайте друзей и получайте бонусы</p>
-                    <p><strong>За каждого приглашённого друга вы получите {REFERRAL_BONUS} ₽</strong></p>
-                    <p>Друг получит {REGISTRATION_BONUS} ₽ при регистрации</p>
-                    <div class="referral-code">{referral_link}</div>
-                    <button class="copy-btn" onclick="copyReferralLink()">Скопировать ссылку</button>
-                </div>
-            </div>
-            <div id="profileTab" class="tab">
-                <h2>Настройки</h2>
-                <form action="/api/update_profile" method="POST">
-                    <div style="margin-bottom:15px;"><label>Имя</label><input type="text" name="full_name" value="{full_name}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
-                    <div style="margin-bottom:15px;"><label>Email</label><input type="email" name="email" value="{email}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
-                    <div style="margin-bottom:15px;"><label>Телефон</label><input type="tel" name="phone" value="{phone}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
-                    <button type="submit" style="background:#667eea;color:white;padding:10px 20px;border:none;border-radius:40px;cursor:pointer;">Сохранить</button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-<div id="avatarModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:1000">
-    <div style="background:white;border-radius:24px;padding:30px;max-width:90%;margin:20px;">
-        <h3>Выберите аватар</h3>
-        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:20px 0;">
-            {"".join(f'<div style="font-size:2rem;cursor:pointer;padding:8px;text-align:center" onclick="selectAvatar(\'{a}\')">{a}</div>' for a in AVATARS)}
-        </div>
-        <button onclick="closeAvatar()" style="width:100%;padding:10px;background:#667eea;color:white;border:none;border-radius:40px;">Закрыть</button>
-    </div>
-</div>
-<script>
-function switchTab(t){{
-    document.querySelectorAll('.menu-item').forEach(i=>i.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(c=>c.classList.remove('active'));
-    if(t==='bookings'){{document.getElementById('bookingsTab').classList.add('active');}}
-    else if(t==='favorites'){{document.getElementById('favoritesTab').classList.add('active');}}
-    else if(t==='notifications'){{document.getElementById('notificationsTab').classList.add('active');}}
-    else if(t==='referral'){{document.getElementById('referralTab').classList.add('active');}}
-    else{{document.getElementById('profileTab').classList.add('active');}}
-}}
-function showAvatar(){{document.getElementById('avatarModal').style.display='flex'}}
-function closeAvatar(){{document.getElementById('avatarModal').style.display='none'}}
-function selectAvatar(a){{fetch('/api/update_avatar',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{avatar:a}})}}).then(()=>location.reload())}}
-function removeFavorite(id){{fetch('/api/remove_favorite',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{hotel_id:id}})}}).then(()=>location.reload())}}
-function markAsRead(id){{fetch('/api/mark_notification_read',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{notification_id:id}})}}).then(()=>location.reload())}}
-function copyReferralLink() {{
-    const link = document.querySelector('.referral-code').innerText;
-    navigator.clipboard.writeText(window.location.origin + link);
-    alert('Ссылка скопирована');
-}}
-function toggleTheme(){{document.body.classList.toggle('dark');localStorage.setItem('theme',document.body.classList.contains('dark')?'dark':'light')}}
-if(localStorage.getItem('theme')==='dark')document.body.classList.add('dark')
-</script>
-</body>
-</html>
-''')
-
-@app.post("/api/update_profile")
-async def update_profile(full_name: str = Form(""), email: str = Form(""), phone: str = Form(""), session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username and username in USERS:
-        USERS[username]["full_name"] = full_name
-        USERS[username]["email"] = email
-        USERS[username]["phone"] = phone
-    return RedirectResponse(url="/profile", status_code=302)
-
-@app.post("/api/update_avatar")
-async def update_avatar(data: dict, session: str = Cookie(None)):
-    username = get_current_user(session)
-    if username and username in USERS:
-        USERS[username]["avatar"] = data.get("avatar", "👤")
-    return {"success": True}
-
-# ============= ПОИСК =============
 
 @app.post("/search")
 async def search(
@@ -1784,6 +1430,7 @@ async def search(
         .btn-book:disabled {{ background: #cbd5e1; cursor: not-allowed; }}
         .back-link {{ display: inline-block; margin-top: 20px; text-decoration: none; color: var(--btn-bg); }}
         
+        /* Стили для галереи */
         .gallery-modal {{
             display: none;
             position: fixed;
@@ -1798,12 +1445,38 @@ async def search(
             flex-direction: column;
         }}
         .gallery-modal.active {{ display: flex; }}
-        .gallery-modal img {{ max-width: 90%; max-height: 80%; border-radius: 12px; }}
-        .gallery-close {{ position: absolute; top: 20px; right: 40px; color: white; font-size: 40px; cursor: pointer; font-weight: bold; }}
-        .gallery-nav {{ position: absolute; top: 50%; transform: translateY(-50%); font-size: 50px; color: white; cursor: pointer; background: rgba(0,0,0,0.5); padding: 10px 20px; border-radius: 50%; }}
+        .gallery-modal img {{
+            max-width: 90%;
+            max-height: 80%;
+            border-radius: 12px;
+        }}
+        .gallery-close {{
+            position: absolute;
+            top: 20px;
+            right: 40px;
+            color: white;
+            font-size: 40px;
+            cursor: pointer;
+            font-weight: bold;
+        }}
+        .gallery-close:hover {{ color: #ccc; }}
+        .gallery-nav {{
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 50px;
+            color: white;
+            cursor: pointer;
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 50%;
+            user-select: none;
+        }}
         .gallery-nav.prev {{ left: 20px; }}
         .gallery-nav.next {{ right: 20px; }}
+        .gallery-nav:hover {{ background: rgba(0,0,0,0.8); }}
         
+        /* Стили для модального окна оплаты */
         .payment-modal {{
             display: none;
             position: fixed;
@@ -1824,14 +1497,89 @@ async def search(
             max-width: 460px;
             width: 90%;
             position: relative;
+            box-shadow: 0 20px 35px -8px rgba(0,0,0,0.2);
         }}
-        .payment-close {{ position: absolute; top: 20px; right: 24px; width: 24px; height: 24px; cursor: pointer; }}
+        .payment-close {{
+            position: absolute;
+            top: 20px;
+            right: 24px;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }}
+        .payment-close:hover {{ opacity: 1; }}
+        .payment-close::before,
+        .payment-close::after {{
+            content: '';
+            position: absolute;
+            top: 10px;
+            left: 0;
+            width: 24px;
+            height: 2px;
+            background: var(--text-primary);
+        }}
+        .payment-close::before {{ transform: rotate(45deg); }}
+        .payment-close::after {{ transform: rotate(-45deg); }}
         .payment-title {{ font-size: 1.25rem; font-weight: 600; margin-bottom: 8px; }}
         .payment-amount {{ font-size: 1.75rem; font-weight: 700; color: var(--primary); margin-bottom: 24px; }}
         .payment-methods {{ display: flex; gap: 12px; margin-bottom: 24px; }}
-        .payment-method {{ flex: 1; padding: 16px 12px; border: 1px solid var(--border-color); border-radius: 12px; text-align: center; cursor: pointer; }}
-        .payment-button {{ width: 100%; padding: 14px; background: var(--primary); color: white; border: none; border-radius: 40px; cursor: pointer; }}
+        .payment-method {{
+            flex: 1;
+            padding: 16px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--card-bg);
+        }}
+        .payment-method:hover {{ border-color: var(--primary); background: rgba(37, 99, 235, 0.05); }}
+        .payment-method.selected {{ border-color: var(--primary); background: rgba(37, 99, 235, 0.08); }}
+        .payment-method-icon {{ width: 32px; height: 32px; margin: 0 auto 8px; color: var(--primary); }}
+        .payment-method-icon svg {{ width: 100%; height: 100%; stroke: currentColor; }}
+        .payment-method-title {{ font-weight: 500; font-size: 0.875rem; margin-bottom: 2px; }}
+        .payment-method-subtitle {{ font-size: 0.7rem; color: var(--text-secondary); }}
+        .payment-card-form {{ margin-bottom: 24px; }}
+        .payment-field {{ margin-bottom: 16px; }}
+        .payment-row {{ display: flex; gap: 12px; }}
+        .payment-field.half {{ flex: 1; }}
+        .payment-label {{ display: block; font-size: 0.7rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 6px; }}
+        .payment-input {{
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--card-bg);
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }}
+        .payment-input:focus {{
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+        }}
+        .payment-sbp-form {{ text-align: center; margin-bottom: 24px; }}
+        .payment-sbp-hint {{ font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 16px; }}
+        .payment-qr-container {{ display: inline-block; padding: 12px; background: white; border-radius: 16px; margin-bottom: 12px; }}
+        .payment-qr-image {{ width: 180px; height: 180px; display: block; }}
+        .payment-sbp-note {{ font-size: 0.7rem; color: var(--text-secondary); }}
+        .payment-button {{
+            width: 100%;
+            padding: 14px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 40px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }}
+        .payment-button:hover {{ background: var(--primary-dark); }}
         
+        /* Стили для модального окна отзыва */
         .review-modal {{
             display: none;
             position: fixed;
@@ -1853,15 +1601,76 @@ async def search(
             width: 90%;
             position: relative;
         }}
-        .review-star {{ font-size: 2rem; cursor: pointer; color: #cbd5e1; }}
-        .review-star.selected {{ color: #f59e0b; }}
-        .review-submit {{ width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 40px; cursor: pointer; }}
+        .review-modal-title {{
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }}
+        .review-rating-select {{
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }}
+        .review-star {{
+            font-size: 2rem;
+            cursor: pointer;
+            color: #cbd5e1;
+            transition: color 0.2s;
+        }}
+        .review-star.selected {{
+            color: #f59e0b;
+        }}
+        .review-textarea {{
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            background: var(--card-bg);
+            font-family: inherit;
+            font-size: 0.875rem;
+            resize: vertical;
+            margin-bottom: 16px;
+        }}
+        .review-textarea:focus {{
+            outline: none;
+            border-color: var(--primary);
+        }}
+        .review-submit {{
+            width: 100%;
+            padding: 12px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: 600;
+        }}
+        .review-close {{
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-secondary);
+        }}
         
         @media (max-width: 768px) {{
             body {{ padding: 12px; }}
-            .hotels-grid, .attractions-grid {{ grid-template-columns: 1fr; }}
+            .header h1 {{ font-size: 1.5rem; }}
+            .result-tab-btn {{ padding: 8px 16px; font-size: 12px; }}
+            .hotels-grid {{ grid-template-columns: 1fr; }}
+            .attractions-grid {{ grid-template-columns: 1fr; }}
             .flight-row {{ flex-direction: column; align-items: flex-start; }}
+            .flight-price {{ text-align: left; }}
+            .hotel-actions {{ flex-direction: column; }}
             .total-bar {{ flex-direction: column; text-align: center; }}
+            .forecast-grid {{ grid-template-columns: repeat(2, 1fr); }}
+            .payment-methods {{ flex-direction: column; gap: 8px; }}
+            .payment-modal-content {{ padding: 24px; }}
+        }}
+        @media (max-width: 480px) {{
+            .forecast-grid {{ grid-template-columns: 1fr; }}
+            .payment-qr-image {{ width: 140px; height: 140px; }}
         }}
     </style>
 </head>
@@ -1893,67 +1702,832 @@ async def search(
         </div>
         
         <div class="result-tabs">
-            <button class="result-tab-btn active" onclick="switchResultTab('hotels')">🏨 Отели ({len(hotels[:10])})</button>
-            <button class="result-tab-btn" onclick="switchResultTab('flights')">✈️ Билеты</button>
-            <button class="result-tab-btn" onclick="switchResultTab('attractions')">🎯 Экскурсии ({len(attractions)})</button>
-            <button class="result-tab-btn" onclick="switchResultTab('map')">🗺️ Карта</button>
+            <button class="result-tab-btn active" onclick="switchResultTab('hotels')"><span class="tab-icon">🏨</span><span class="tab-text">Отели</span><span class="tab-count">{len(hotels[:10])}</span></button>
+            <button class="result-tab-btn" onclick="switchResultTab('flights')"><span class="tab-icon">✈️</span><span class="tab-text">Билеты</span><span class="tab-count">{len(flights_there)}</span></button>
+            <button class="result-tab-btn" onclick="switchResultTab('attractions')"><span class="tab-icon">🎯</span><span class="tab-text">Экскурсии</span><span class="tab-count">{len(attractions)}</span></button>
+            <button class="result-tab-btn" onclick="switchResultTab('map')"><span class="tab-icon">🗺️</span><span class="tab-text">Карта</span></button>
         </div>
         
-        <div id="hotelsTab" class="result-tab-content active"><h2>Выберите отель</h2><div class="hotels-grid">{hotels_html}</div></div>
-        <div id="flightsTab" class="result-tab-content">
-            <div class="flights-section"><h3>✈️ Туда (Москва → {destination})</h3><div id="flightsThereList">{flights_there_html}</div></div>
-            <div class="flights-section"><h3>✈️ Обратно ({destination} → Москва)</h3><div id="flightsBackList">{flights_back_html}</div></div>
+        <div id="hotelsTab" class="result-tab-content active">
+            <h2 style="margin: 20px 0 15px;">Выберите отель</h2>
+            <div class="hotels-grid">{hotels_html}</div>
         </div>
-        <div id="attractionsTab" class="result-tab-content"><h2>Экскурсии в {destination}</h2><div class="attractions-grid">{attractions_html}</div></div>
-        <div id="mapTab" class="result-tab-content"><h2>Карта</h2>{map_html}</div>
+        
+        <div id="flightsTab" class="result-tab-content">
+            <div class="flights-section"><h3>Выберите билет туда (Москва → {destination}) - {len(flights_there)} вариантов</h3><div id="flightsThereList">{flights_there_html}</div></div>
+            <div class="flights-section"><h3>Выберите билет обратно ({destination} → Москва) - {len(flights_back)} вариантов</h3><div id="flightsBackList">{flights_back_html}</div></div>
+        </div>
+        
+        <div id="attractionsTab" class="result-tab-content">
+            <h2 style="margin: 20px 0 15px;">Популярные экскурсии в {destination} - {len(attractions)} вариантов</h2>
+            <div class="attractions-grid">{attractions_html}</div>
+        </div>
+        
+        <div id="mapTab" class="result-tab-content">
+            <h2 style="margin: 20px 0 15px;">Карта отелей и достопримечательностей</h2>
+            {map_html}
+        </div>
         
         <div class="total-bar">
             <div>Отель <strong id="selectedHotel">Не выбран</strong> | Билет туда <strong id="selectedThere">Не выбран</strong> | Билет обратно <strong id="selectedBack">Не выбран</strong></div>
-            <div><span id="totalPrice">0 ₽</span><button class="btn-book" id="bookBtn" onclick="bookTour()" disabled>Забронировать</button></div>
+            <div><span class="total-value highlight" id="totalPrice">0 ₽</span><button class="btn-book" id="bookBtn" onclick="bookTour()" disabled>Забронировать</button></div>
         </div>
         
         <a href="/" class="back-link">← Вернуться к поиску</a>
     </div>
     
-    <div id="galleryModal" class="gallery-modal"><span class="gallery-close" onclick="closeGallery()">&times;</span><span class="gallery-nav prev" onclick="changeImage(-1)">&#10094;</span><img id="galleryImage" src=""><span class="gallery-nav next" onclick="changeImage(1)">&#10095;</span></div>
-    <div id="paymentModal" class="payment-modal"><div class="payment-modal-content"><div class="payment-close" onclick="closePaymentModal()"></div><div class="payment-title">Оплата тура</div><div id="paymentAmount" class="payment-amount"></div><button class="payment-button" onclick="processPayment()">Подтвердить оплату</button></div></div>
-    <div id="reviewModal" class="review-modal"><div class="review-modal-content"><span class="review-close" onclick="closeReviewModal()">&times;</span><div class="review-modal-title">Оставить отзыв</div><div id="reviewHotelName"></div><div class="review-rating-select" id="ratingStars"><span class="review-star" data-rating="1">☆</span><span class="review-star" data-rating="2">☆</span><span class="review-star" data-rating="3">☆</span><span class="review-star" data-rating="4">☆</span><span class="review-star" data-rating="5">☆</span></div><textarea id="reviewText" rows="4" placeholder="Поделитесь впечатлениями..."></textarea><button class="review-submit" onclick="submitReview()">Отправить отзыв</button></div></div>
+    <!-- Модальное окно для галереи -->
+    <div id="galleryModal" class="gallery-modal">
+        <span class="gallery-close" onclick="closeGallery()">&times;</span>
+        <span class="gallery-nav prev" onclick="changeImage(-1)">&#10094;</span>
+        <img id="galleryImage" src="">
+        <span class="gallery-nav next" onclick="changeImage(1)">&#10095;</span>
+    </div>
+
+    <!-- Модальное окно оплаты -->
+    <div id="paymentModal" class="payment-modal">
+        <div class="payment-modal-content">
+            <div class="payment-close" onclick="closePaymentModal()"></div>
+            <div class="payment-title">Оплата тура</div>
+            <div id="paymentAmount" class="payment-amount"></div>
+            
+            <div class="payment-methods">
+                <div class="payment-method" onclick="selectPaymentMethod('card')">
+                    <div class="payment-method-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="2" y="5" width="20" height="14" rx="2" ry="2"></rect>
+                            <line x1="2" y1="10" x2="22" y2="10"></line>
+                        </svg>
+                    </div>
+                    <div class="payment-method-title">Банковская карта</div>
+                    <div class="payment-method-subtitle">Visa, Mastercard, Мир</div>
+                </div>
+                <div class="payment-method" onclick="selectPaymentMethod('sbp')">
+                    <div class="payment-method-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.66 0 3-4 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4-3-9s1.34-9 3-9"/>
+                        </svg>
+                    </div>
+                    <div class="payment-method-title">СБП</div>
+                    <div class="payment-method-subtitle">Система быстрых платежей</div>
+                </div>
+            </div>
+            
+            <div id="cardForm" class="payment-card-form" style="display: none;">
+                <div class="payment-field">
+                    <label class="payment-label">Номер карты</label>
+                    <input type="text" id="cardNumber" class="payment-input" placeholder="0000 0000 0000 0000" maxlength="19">
+                </div>
+                <div class="payment-row">
+                    <div class="payment-field half">
+                        <label class="payment-label">Срок действия</label>
+                        <input type="text" id="cardExpiry" class="payment-input" placeholder="ММ/ГГ" maxlength="5">
+                    </div>
+                    <div class="payment-field half">
+                        <label class="payment-label">CVV</label>
+                        <input type="password" id="cardCvv" class="payment-input" placeholder="***" maxlength="3">
+                    </div>
+                </div>
+                <div class="payment-field">
+                    <label class="payment-label">Владелец карты</label>
+                    <input type="text" id="cardName" class="payment-input" placeholder="IVAN IVANOV">
+                </div>
+            </div>
+            
+            <div id="sbpForm" class="payment-sbp-form" style="display: none;">
+                <div class="payment-sbp-hint">Сканируйте QR-код в приложении вашего банка</div>
+                <div class="payment-qr-container">
+                    <img id="sbpQrCode" class="payment-qr-image" src="" alt="QR-код для оплаты">
+                </div>
+                <div class="payment-sbp-note">Демонстрационный режим</div>
+            </div>
+            
+            <button id="payButton" class="payment-button" onclick="processPayment()">Подтвердить оплату</button>
+        </div>
+    </div>
+
+    <!-- Модальное окно для отзыва -->
+    <div id="reviewModal" class="review-modal">
+        <div class="review-modal-content">
+            <span class="review-close" onclick="closeReviewModal()">&times;</span>
+            <div class="review-modal-title">Оставить отзыв</div>
+            <div id="reviewHotelName" style="margin-bottom: 16px; font-weight: 500;"></div>
+            <div class="review-rating-select" id="ratingStars">
+                <span class="review-star" data-rating="1">☆</span>
+                <span class="review-star" data-rating="2">☆</span>
+                <span class="review-star" data-rating="3">☆</span>
+                <span class="review-star" data-rating="4">☆</span>
+                <span class="review-star" data-rating="5">☆</span>
+            </div>
+            <textarea id="reviewText" class="review-textarea" rows="4" placeholder="Поделитесь впечатлениями об отеле..."></textarea>
+            <button class="review-submit" onclick="submitReview()">Отправить отзыв</button>
+        </div>
+    </div>
 
     <script>
-        let selectedHotelPrice=0,selectedTherePrice=0,selectedBackPrice=0;
-        function switchResultTab(tab){{
-            document.querySelectorAll('.result-tab-btn').forEach(b=>b.classList.remove('active'));
-            document.querySelectorAll('.result-tab-content').forEach(c=>c.classList.remove('active'));
-            if(tab==='hotels'){{document.querySelector('.result-tab-btn:first-child').classList.add('active');document.getElementById('hotelsTab').classList.add('active');}}
-            else if(tab==='flights'){{document.querySelector('.result-tab-btn:nth-child(2)').classList.add('active');document.getElementById('flightsTab').classList.add('active');}}
-            else if(tab==='attractions'){{document.querySelector('.result-tab-btn:nth-child(3)').classList.add('active');document.getElementById('attractionsTab').classList.add('active');}}
-            else{{document.querySelector('.result-tab-btn:nth-child(4)').classList.add('active');document.getElementById('mapTab').classList.add('active');}}
+        let selectedHotelPrice = 0, selectedHotelName = "", selectedHotelStars = 0;
+        let selectedTherePrice = 0, selectedThereName = "";
+        let selectedBackPrice = 0, selectedBackName = "";
+        
+        let currentImages = [];
+        let currentImageIndex = 0;
+        
+        let currentPaymentAmount = 0;
+        let currentPaymentMethod = null;
+        let currentPaymentId = null;
+        let currentBookingData = null;
+        
+        let currentReviewHotelId = null;
+        let currentReviewHotelName = "";
+        let selectedRating = 0;
+        
+        function switchResultTab(tab) {{
+            document.querySelectorAll('.result-tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.result-tab-content').forEach(content => content.classList.remove('active'));
+            if (tab === 'hotels') {{
+                document.querySelector('.result-tab-btn:first-child').classList.add('active');
+                document.getElementById('hotelsTab').classList.add('active');
+            }} else if (tab === 'flights') {{
+                document.querySelector('.result-tab-btn:nth-child(2)').classList.add('active');
+                document.getElementById('flightsTab').classList.add('active');
+            }} else if (tab === 'attractions') {{
+                document.querySelector('.result-tab-btn:nth-child(3)').classList.add('active');
+                document.getElementById('attractionsTab').classList.add('active');
+            }} else if (tab === 'map') {{
+                document.querySelector('.result-tab-btn:nth-child(4)').classList.add('active');
+                document.getElementById('mapTab').classList.add('active');
+                setTimeout(() => {{ if (window.map) window.map.invalidateSize(); }}, 100);
+            }}
         }}
-        function selectHotel(idx,price,name){{selectedHotelPrice=price;document.getElementById('selectedHotel').innerHTML=name;updateTotal();}}
-        function selectFlightThere(idx,price,name){{selectedTherePrice=price;document.getElementById('selectedThere').innerHTML=name;updateTotal();}}
-        function selectFlightBack(idx,price,name){{selectedBackPrice=price;document.getElementById('selectedBack').innerHTML=name;updateTotal();}}
-        function updateTotal(){{const total=selectedHotelPrice+selectedTherePrice+selectedBackPrice;document.getElementById('totalPrice').innerHTML=total.toLocaleString()+' ₽';document.getElementById('bookBtn').disabled=!(selectedHotelPrice&&selectedTherePrice&&selectedBackPrice);}}
-        function bookTour(){{if(!selectedHotelPrice||!selectedTherePrice||!selectedBackPrice){{alert('Выберите отель и билеты');return;}}alert('Демо-бронирование! Спасибо за использование SmartTravel.');}}
-        function addToFavorites(id,name,city,price){{fetch('/api/add_favorite',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{hotel_id:id,hotel_name:name,city:city,price:price}})}}).then(()=>alert('Добавлено в избранное'));}}
-        function openReviewModal(id,name){{alert('Функция отзывов в разработке');}}
-        function toggleTheme(){{document.body.classList.toggle('dark-theme');localStorage.setItem('theme',document.body.classList.contains('dark-theme')?'dark':'light');}}
-        if(localStorage.getItem('theme')==='dark')document.body.classList.add('dark-theme');
-        function openGallery(images,idx){{if(images.length)window.open(images[0],'_blank');else alert('Фото временно недоступны');}}
-        function closePaymentModal(){{document.getElementById('paymentModal').style.display='none';}}
-        function closeGallery(){{document.getElementById('galleryModal').classList.remove('active');}}
-        function changeImage(d){{}}
-        function closeReviewModal(){{document.getElementById('reviewModal').classList.remove('active');}}
-        function submitReview(){{alert('Спасибо за отзыв!');closeReviewModal();}}
-        document.querySelectorAll('.review-star').forEach(star=>{{
-            star.addEventListener('click',function(){{document.querySelectorAll('.review-star').forEach(s=>s.classList.remove('selected'));this.classList.add('selected');}});
+        
+        function selectHotel(idx, price, name, stars) {{
+            document.querySelectorAll('.hotel-card').forEach((el, i) => el.classList.toggle('selected', i === idx));
+            selectedHotelPrice = price;
+            selectedHotelName = name;
+            selectedHotelStars = stars;
+            document.getElementById('selectedHotel').innerHTML = name;
+            updateTotal();
+        }}
+        
+        function addToFavorites(id, name, city, price) {{
+            fetch('/api/add_favorite', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ hotel_id: id, hotel_name: name, city: city, price: price }})
+            }}).then(() => alert('Отель добавлен в избранное'));
+        }}
+        
+        function openReviewModal(hotelId, hotelName) {{
+            currentReviewHotelId = hotelId;
+            currentReviewHotelName = hotelName;
+            selectedRating = 0;
+            document.getElementById('reviewHotelName').innerHTML = hotelName;
+            document.getElementById('reviewText').value = '';
+            document.querySelectorAll('.review-star').forEach(star => {{
+                star.classList.remove('selected');
+                star.innerHTML = '☆';
+            }});
+            document.getElementById('reviewModal').classList.add('active');
+        }}
+        
+        function closeReviewModal() {{
+            document.getElementById('reviewModal').classList.remove('active');
+        }}
+        
+        function submitReview() {{
+            if (selectedRating === 0) {{
+                alert('Поставьте оценку');
+                return;
+            }}
+            const text = document.getElementById('reviewText').value;
+            if (!text.trim()) {{
+                alert('Напишите текст отзыва');
+                return;
+            }}
+            
+            fetch('/api/add_review', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{
+                    hotel_id: currentReviewHotelId,
+                    rating: selectedRating,
+                    text: text
+                }})
+            }})
+            .then(res => res.json())
+            .then(data => {{
+                if (data.success) {{
+                    alert('Спасибо за отзыв');
+                    location.reload();
+                }} else {{
+                    alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+                }}
+            }});
+        }}
+        
+        document.querySelectorAll('.review-star').forEach(star => {{
+            star.addEventListener('click', function() {{
+                const rating = parseInt(this.dataset.rating);
+                selectedRating = rating;
+                document.querySelectorAll('.review-star').forEach((s, i) => {{
+                    if (i < rating) {{
+                        s.classList.add('selected');
+                        s.innerHTML = '★';
+                    }} else {{
+                        s.classList.remove('selected');
+                        s.innerHTML = '☆';
+                    }}
+                }});
+            }});
         }});
+        
+        function showAllReviews(hotelId) {{
+            const hotelCard = document.querySelectorAll('.hotel-card')[hotelId];
+            if (hotelCard) {{
+                hotelCard.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            }}
+        }}
+        
+        function selectFlightThere(idx, price, name) {{
+            document.querySelectorAll('#flightsThereList .flight-item').forEach((el, i) => el.classList.toggle('selected-there', i === idx));
+            selectedTherePrice = price;
+            selectedThereName = name;
+            document.getElementById('selectedThere').innerHTML = name;
+            updateTotal();
+        }}
+        
+        function selectFlightBack(idx, price, name) {{
+            document.querySelectorAll('#flightsBackList .flight-item').forEach((el, i) => el.classList.toggle('selected-back', i === idx));
+            selectedBackPrice = price;
+            selectedBackName = name;
+            document.getElementById('selectedBack').innerHTML = name;
+            updateTotal();
+        }}
+        
+        function updateTotal() {{
+            const total = selectedHotelPrice + selectedTherePrice + selectedBackPrice;
+            document.getElementById('totalPrice').innerHTML = total.toLocaleString() + ' ₽';
+            document.getElementById('bookBtn').disabled = !(selectedHotelPrice && selectedTherePrice && selectedBackPrice);
+        }}
+        
+        function openPaymentModal(amount, bookingData) {{
+            currentPaymentAmount = amount;
+            currentBookingData = bookingData;
+            document.getElementById('paymentAmount').innerHTML = amount.toLocaleString() + ' ₽';
+            document.getElementById('paymentModal').classList.add('active');
+            document.getElementById('cardForm').style.display = 'none';
+            document.getElementById('sbpForm').style.display = 'none';
+            currentPaymentMethod = null;
+            document.querySelectorAll('.payment-method').forEach(m => m.classList.remove('selected'));
+        }}
+        
+        function closePaymentModal() {{
+            document.getElementById('paymentModal').classList.remove('active');
+        }}
+        
+        function selectPaymentMethod(method) {{
+            currentPaymentMethod = method;
+            document.querySelectorAll('.payment-method').forEach(m => m.classList.remove('selected'));
+            event.target.closest('.payment-method').classList.add('selected');
+            
+            if (method === 'card') {{
+                document.getElementById('cardForm').style.display = 'block';
+                document.getElementById('sbpForm').style.display = 'none';
+            }} else {{
+                document.getElementById('cardForm').style.display = 'none';
+                document.getElementById('sbpForm').style.display = 'block';
+                
+                const qrImage = document.getElementById('sbpQrCode');
+                if (qrImage) {{
+                    qrImage.src = '/static/images/sbp_qr_demo.png';
+                    qrImage.onerror = function() {{
+                        this.src = 'https://upload.wikimedia.org/wikipedia/commons/d/d0/QR_code_for_mobile_English_Wikipedia.svg';
+                    }};
+                }}
+                
+                fetch('/api/initiate_payment', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        booking_id: currentBookingData?.id || 'demo',
+                        amount: currentPaymentAmount,
+                        method: 'sbp'
+                    }})
+                }})
+                .then(res => res.json())
+                .then(data => {{
+                    if (data.success) {{
+                        currentPaymentId = data.payment_id;
+                    }}
+                }})
+                .catch(err => console.log('Init payment error:', err));
+            }}
+        }}
+        
+        function processPayment() {{
+            if (!currentPaymentMethod) {{
+                alert('Выберите способ оплаты');
+                return;
+            }}
+            
+            if (currentPaymentMethod === 'card') {{
+                const cardNum = document.getElementById('cardNumber').value.replace(/\\s/g, '');
+                const expiry = document.getElementById('cardExpiry').value;
+                const cvv = document.getElementById('cardCvv').value;
+                
+                if (cardNum.length < 16) {{
+                    alert('Введите номер карты (16 цифр)');
+                    return;
+                }}
+                if (expiry.length < 5) {{
+                    alert('Введите срок действия (ММ/ГГ)');
+                    return;
+                }}
+                if (cvv.length < 3) {{
+                    alert('Введите CVV код');
+                    return;
+                }}
+            }}
+            
+            fetch('/api/initiate_payment', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{
+                    booking_id: currentBookingData?.id || 'demo',
+                    amount: currentPaymentAmount,
+                    method: currentPaymentMethod
+                }})
+            }})
+            .then(res => res.json())
+            .then(data => {{
+                if (data.success) {{
+                    return fetch('/api/confirm_payment', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            payment_id: data.payment_id,
+                            booking_id: currentBookingData?.id || 'demo',
+                            destination: currentBookingData?.destination,
+                            nights: currentBookingData?.nights,
+                            hotel: currentBookingData?.hotel,
+                            flight_there: currentBookingData?.flight_there,
+                            flight_back: currentBookingData?.flight_back
+                        }})
+                    }});
+                }}
+                throw new Error('Init payment failed');
+            }})
+            .then(res => res.json())
+            .then(data => {{
+                if (data.success) {{
+                    alert('Оплата успешно проведена');
+                    closePaymentModal();
+                    document.getElementById('bookBtn').disabled = true;
+                    document.getElementById('bookBtn').innerHTML = 'Оплачено';
+                }} else {{
+                    alert('Ошибка оплаты: ' + (data.error || 'Неизвестная ошибка'));
+                }}
+            }})
+            .catch(err => {{
+                alert('Ошибка соединения: ' + err.message);
+            }});
+        }}
+        
+        document.getElementById('cardNumber')?.addEventListener('input', function(e) {{
+            let value = e.target.value.replace(/\\D/g, '');
+            value = value.replace(/(\\d{{4}})(?=\\d)/g, '$1 ');
+            e.target.value = value.slice(0, 19);
+        }});
+        
+        document.getElementById('cardExpiry')?.addEventListener('input', function(e) {{
+            let value = e.target.value.replace(/\\D/g, '');
+            if (value.length >= 2) {{
+                value = value.slice(0,2) + '/' + value.slice(2,4);
+            }}
+            e.target.value = value.slice(0,5);
+        }});
+        
+        document.getElementById('cardCvv')?.addEventListener('input', function(e) {{
+            e.target.value = e.target.value.replace(/\\D/g, '').slice(0,3);
+        }});
+        
+        function bookTour() {{
+            if (!selectedHotelPrice || !selectedTherePrice || !selectedBackPrice) {{
+                alert('Выберите отель и билеты');
+                return;
+            }}
+            const total = selectedHotelPrice + selectedTherePrice + selectedBackPrice;
+            
+            openPaymentModal(total, {{
+                id: Date.now(),
+                destination: '{destination}',
+                nights: {nights},
+                hotel: selectedHotelName,
+                flight_there: selectedThereName,
+                flight_back: selectedBackName,
+                total_price: total
+            }});
+        }}
+        
+        function openGallery(images, index) {{
+            if (!images || images.length === 0) {{
+                alert('Фотографии временно недоступны');
+                return;
+            }}
+            currentImages = images;
+            currentImageIndex = 0;
+            const modal = document.getElementById('galleryModal');
+            const img = document.getElementById('galleryImage');
+            if (modal && img) {{
+                img.src = images[0];
+                modal.classList.add('active');
+            }}
+        }}
+        
+        function closeGallery() {{
+            document.getElementById('galleryModal').classList.remove('active');
+        }}
+        
+        function changeImage(direction) {{
+            if (!currentImages || currentImages.length === 0) return;
+            currentImageIndex += direction;
+            if (currentImageIndex < 0) currentImageIndex = currentImages.length - 1;
+            if (currentImageIndex >= currentImages.length) currentImageIndex = 0;
+            document.getElementById('galleryImage').src = currentImages[currentImageIndex];
+        }}
+        
+        document.addEventListener('keydown', function(e) {{
+            if (document.getElementById('galleryModal').classList.contains('active')) {{
+                if (e.key === 'ArrowLeft') changeImage(-1);
+                if (e.key === 'ArrowRight') changeImage(1);
+                if (e.key === 'Escape') closeGallery();
+            }}
+            if (document.getElementById('paymentModal').classList.contains('active')) {{
+                if (e.key === 'Escape') closePaymentModal();
+            }}
+            if (document.getElementById('reviewModal').classList.contains('active')) {{
+                if (e.key === 'Escape') closeReviewModal();
+            }}
+        }});
+        
+        function toggleTheme() {{
+            document.body.classList.toggle('dark-theme');
+            localStorage.setItem('theme', document.body.classList.contains('dark-theme') ? 'dark' : 'light');
+        }}
+        if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark-theme');
     </script>
 </body>
 </html>
 """
     return HTMLResponse(content=results_html)
+# ============= API ДЛЯ ОТЗЫВОВ =============
 
-# ============= АВТОРИЗАЦИЯ (ТОЛЬКО ОДИН БЛОК) =============
+@app.post("/api/add_review")
+async def add_review(data: dict, session: str = Cookie(None)):
+    """Добавление отзыва об отеле"""
+    username = get_current_user(session)
+    if not username:
+        return {"success": False, "error": "Не авторизован"}
+    
+    hotel_id = data.get("hotel_id")
+    rating = data.get("rating")
+    text = data.get("text")
+    
+    if hotel_id is None or not rating or not text:
+        return {"success": False, "error": "Заполните все поля"}
+    
+    if rating < 1 or rating > 5:
+        return {"success": False, "error": "Оценка должна быть от 1 до 5"}
+    
+    hotel_id_str = str(hotel_id)
+    
+    if hotel_id_str not in REVIEWS:
+        REVIEWS[hotel_id_str] = []
+    
+    REVIEWS[hotel_id_str].append({
+        "username": username,
+        "rating": rating,
+        "text": text,
+        "date": datetime.now().strftime("%d.%m.%Y")
+    })
+    
+    return {"success": True}
+
+
+@app.get("/api/get_reviews/{hotel_id}")
+async def get_reviews(hotel_id: str):
+    """Получение отзывов об отеле"""
+    hotel_reviews = REVIEWS.get(hotel_id, [])
+    return {"success": True, "reviews": hotel_reviews}
+
+
+# ============= ПРОФИЛЬ И ОСТАЛЬНЫЕ API =============
+
+@app.get("/profile")
+async def profile(session: str = Cookie(None)):
+    username = get_current_user(session)
+    if not username:
+        return RedirectResponse(url="/login", status_code=303)
+    
+    user_data = USERS.get(username, {})
+    avatar = user_data.get("avatar", "👤")
+    full_name = user_data.get("full_name", username)
+    email = user_data.get("email", "")
+    phone = user_data.get("phone", "")
+    bookings = BOOKINGS.get(username, [])
+    favorites = FAVORITES.get(username, [])
+    notifications = NOTIFICATIONS.get(username, [])
+    balance = USER_BALANCES.get(username, 0)
+    referral_link = get_referral_link(username)
+    bookings.reverse()
+    
+    bookings_html = "".join(f'<div class="booking"><div><strong>✈️ {b["destination"]}</strong> | 📅 {b["nights"]} ночей | 💰 {b["total_price"]:,} ₽</div><div>🏨 {b["hotel"]} | ✈️ {b["flight_there"]} → {b["flight_back"]}</div><div>📅 {b["start_date"]} - {b["end_date"]}</div><div class="status">Подтверждено</div></div>' for b in bookings) or "<p>Нет бронирований</p>"
+    favorites_html = "".join(f'<div class="fav"><div><strong>🏨 {fav["hotel_name"]}</strong> ({fav["city"]}) - 💰 {fav["price"]:,} ₽/ночь</div><button onclick="removeFavorite({fav["hotel_id"]})">Удалить</button></div>' for fav in favorites) or "<p>Нет избранных</p>"
+    notifications_html = "".join(f'<div class="notif {"" if n.get("read") else "unread"}" onclick="markAsRead({n["id"]})"><div>{n["icon"]}</div><div><div>{n["title"]}</div><div>{n["text"]}</div><div>{n["date"]}</div></div></div>' for n in notifications[:5]) or "<p>Нет уведомлений</p>"
+    
+    return HTMLResponse(content=f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>Личный кабинет</title>
+    <style>
+        *{{margin:0;padding:0;box-sizing:border-box}}
+        :root{{--bg:#f3f5f9;--card:white;--text:#5a6e8a;--border:#eef2f7}}
+        body.dark{{--bg:#1a1a2e;--card:#1e1e2e;--text:#e0e0e0}}
+        body{{font-family:Segoe UI;background:var(--bg);padding:20px;transition:.3s}}
+        .container{{max-width:1200px;margin:0 auto}}
+        .navbar{{background:var(--card);padding:15px 30px;border-radius:60px;margin-bottom:30px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}}
+        .profile-grid{{display:grid;grid-template-columns:280px 1fr;gap:24px}}
+        .sidebar{{background:var(--card);border-radius:24px;padding:24px}}
+        .avatar{{width:100px;height:100px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:3rem;margin:0 auto 15px;cursor:pointer}}
+        .menu-item{{padding:12px 15px;cursor:pointer;border-radius:12px;margin-bottom:5px;color:var(--text)}}
+        .menu-item:hover,.menu-item.active{{background:var(--border)}}
+        .main-content{{background:var(--card);border-radius:24px;padding:30px}}
+        .tab{{display:none}}
+        .tab.active{{display:block}}
+        .booking,.fav,.notif{{background:var(--border);border-radius:16px;padding:15px;margin-bottom:15px}}
+        .status{{background:#e8f5e9;color:#2e7d32;padding:4px 12px;border-radius:20px;display:inline-block;margin-top:10px}}
+        .unread{{background:#eef2ff;border-left:4px solid #667eea}}
+        .referral-box{{background:linear-gradient(135deg,#667eea20 0%,#764ba220 100%);border-radius:16px;padding:15px;margin-top:15px;text-align:center}}
+        .referral-code{{background:var(--card);padding:10px;border-radius:12px;font-family:monospace;font-size:1.2rem;margin:10px 0;word-break:break-all}}
+        .copy-btn{{background:#667eea;color:white;border:none;padding:8px 20px;border-radius:40px;cursor:pointer}}
+        .balance{{background:#e8f5e9;padding:10px;border-radius:12px;text-align:center;margin-bottom:15px;color:#2e7d32;font-weight:bold}}
+        
+        @media (max-width: 768px) {{
+            .profile-grid{{grid-template-columns:1fr;gap:16px}}
+            .navbar{{flex-direction:column;text-align:center}}
+            .sidebar{{padding:16px}}
+            .main-content{{padding:20px}}
+            .avatar{{width:80px;height:80px;font-size:2.5rem}}
+            .menu-item{{padding:10px 12px;font-size:0.9rem}}
+            .booking,.fav,.notif{{padding:12px;font-size:0.85rem}}
+        }}
+        @media (max-width: 480px) {{
+            body{{padding:12px}}
+            .navbar{{padding:12px 20px}}
+            .main-content{{padding:16px}}
+        }}
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="navbar">
+        <div>SmartTravel</div>
+        <div>
+            <button onclick="toggleTheme()">Тёмная</button>
+            <a href="/" style="margin-left:15px;">Главная</a>
+            <a href="/logout" style="margin-left:15px;color:#dc2626">Выйти</a>
+        </div>
+    </div>
+    <div class="profile-grid">
+        <div class="sidebar">
+            <div class="avatar" onclick="showAvatar()">{avatar}</div>
+            <div><div>{full_name}</div><div>{email}</div></div>
+            <div class="balance">Баланс бонусов: {balance} ₽</div>
+            <div class="menu">
+                <div class="menu-item active" onclick="switchTab('bookings')">Бронирования</div>
+                <div class="menu-item" onclick="switchTab('favorites')">Избранное</div>
+                <div class="menu-item" onclick="switchTab('notifications')">Уведомления</div>
+                <div class="menu-item" onclick="switchTab('referral')">Реферальная система</div>
+                <div class="menu-item" onclick="switchTab('profile')">Настройки</div>
+            </div>
+        </div>
+        <div class="main-content">
+            <div id="bookingsTab" class="tab active"><h2>Бронирования</h2>{bookings_html}</div>
+            <div id="favoritesTab" class="tab"><h2>Избранное</h2>{favorites_html}</div>
+            <div id="notificationsTab" class="tab"><h2>Уведомления</h2>{notifications_html}</div>
+            <div id="referralTab" class="tab">
+                <h2>Реферальная система</h2>
+                <div class="referral-box">
+                    <p>Приглашайте друзей и получайте бонусы</p>
+                    <p><strong>За каждого приглашённого друга вы получите {REFERRAL_BONUS} ₽</strong></p>
+                    <p>Друг получит {REGISTRATION_BONUS} ₽ при регистрации</p>
+                    <div class="referral-code">{referral_link}</div>
+                    <button class="copy-btn" onclick="copyReferralLink()">Скопировать ссылку</button>
+                </div>
+            </div>
+            <div id="profileTab" class="tab">
+                <h2>Настройки</h2>
+                <form action="/api/update_profile" method="POST">
+                    <div style="margin-bottom:15px;"><label>Имя</label><input type="text" name="full_name" value="{full_name}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
+                    <div style="margin-bottom:15px;"><label>Email</label><input type="email" name="email" value="{email}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
+                    <div style="margin-bottom:15px;"><label>Телефон</label><input type="tel" name="phone" value="{phone}" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;"></div>
+                    <button type="submit" style="background:#667eea;color:white;padding:10px 20px;border:none;border-radius:40px;cursor:pointer;">Сохранить</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<div id="avatarModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:1000">
+    <div style="background:white;border-radius:24px;padding:30px;max-width:90%;margin:20px;">
+        <h3>Выберите аватар</h3>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:20px 0;">
+            {"".join(f'<div style="font-size:2rem;cursor:pointer;padding:8px;text-align:center" onclick="selectAvatar(\'{a}\')">{a}</div>' for a in AVATARS)}
+        </div>
+        <button onclick="closeAvatar()" style="width:100%;padding:10px;background:#667eea;color:white;border:none;border-radius:40px;">Закрыть</button>
+    </div>
+</div>
+<script>
+function switchTab(t){{
+    document.querySelectorAll('.menu-item').forEach(i=>i.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(c=>c.classList.remove('active'));
+    if(t==='bookings'){{document.getElementById('bookingsTab').classList.add('active');}}
+    else if(t==='favorites'){{document.getElementById('favoritesTab').classList.add('active');}}
+    else if(t==='notifications'){{document.getElementById('notificationsTab').classList.add('active');}}
+    else if(t==='referral'){{document.getElementById('referralTab').classList.add('active');}}
+    else{{document.getElementById('profileTab').classList.add('active');}}
+}}
+function showAvatar(){{document.getElementById('avatarModal').style.display='flex'}}
+function closeAvatar(){{document.getElementById('avatarModal').style.display='none'}}
+function selectAvatar(a){{fetch('/api/update_avatar',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{avatar:a}})}}).then(()=>location.reload())}}
+function removeFavorite(id){{fetch('/api/remove_favorite',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{hotel_id:id}})}}).then(()=>location.reload())}}
+function markAsRead(id){{fetch('/api/mark_notification_read',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{notification_id:id}})}}).then(()=>location.reload())}}
+function copyReferralLink() {{
+    const link = document.querySelector('.referral-code').innerText;
+    navigator.clipboard.writeText(window.location.origin + link);
+    alert('Ссылка скопирована');
+}}
+function toggleTheme(){{document.body.classList.toggle('dark');localStorage.setItem('theme',document.body.classList.contains('dark')?'dark':'light')}}
+if(localStorage.getItem('theme')==='dark')document.body.classList.add('dark')
+</script>
+</body>
+</html>
+''')
+
+
+@app.post("/api/update_profile")
+async def update_profile(full_name: str = Form(""), email: str = Form(""), phone: str = Form(""), session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username and username in USERS:
+        USERS[username]["full_name"] = full_name
+        USERS[username]["email"] = email
+        USERS[username]["phone"] = phone
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/api/update_avatar")
+async def update_avatar(data: dict, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username and username in USERS:
+        USERS[username]["avatar"] = data.get("avatar", "👤")
+    return {"success": True}
+
+
+@app.post("/api/add_favorite")
+async def add_favorite(data: dict, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username:
+        if username not in FAVORITES:
+            FAVORITES[username] = []
+        FAVORITES[username].append({"hotel_id": data.get("hotel_id"), "hotel_name": data.get("hotel_name"), "city": data.get("city"), "price": data.get("price")})
+    return {"success": True}
+
+
+@app.post("/api/remove_favorite")
+async def remove_favorite(data: dict, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username and username in FAVORITES:
+        FAVORITES[username] = [f for f in FAVORITES[username] if f["hotel_id"] != data.get("hotel_id")]
+    return {"success": True}
+
+
+@app.post("/api/mark_notification_read")
+async def mark_notification_read(data: dict, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username and username in NOTIFICATIONS:
+        for n in NOTIFICATIONS[username]:
+            if n["id"] == data.get("notification_id"):
+                n["read"] = True
+    return {"success": True}
+
+
+@app.post("/api/save_booking")
+async def save_booking(data: dict, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if username:
+        if username not in BOOKINGS:
+            BOOKINGS[username] = []
+        BOOKINGS[username].append(data)
+        if username not in NOTIFICATIONS:
+            NOTIFICATIONS[username] = []
+        NOTIFICATIONS[username].append({"id": len(NOTIFICATIONS[username]) + 1, "icon": "✅", "title": "Тур успешно забронирован", "text": f"Ваш тур в {data['destination']} на {data['nights']} ночей подтвержден.", "date": datetime.now().strftime("%d.%m.%Y %H:%M"), "read": False})
+    return {"success": True}
+
+
+# ============= ПЛАТЁЖНАЯ СИСТЕМА (ДЕМО-РЕЖИМ) =============
+
+@app.post("/api/initiate_payment")
+async def initiate_payment(data: dict, session: str = Cookie(None)):
+    """Имитация инициализации платежа"""
+    username = get_current_user(session)
+    if not username:
+        return {"success": False, "error": "Не авторизован"}
+    
+    booking_id = data.get("booking_id")
+    amount = data.get("amount")
+    method = data.get("method")
+    
+    if not booking_id or not amount:
+        return {"success": False, "error": "Не указаны данные платежа"}
+    
+    payment_id = secrets.token_hex(8)
+    
+    PAYMENTS[payment_id] = {
+        "booking_id": booking_id,
+        "amount": amount,
+        "method": method,
+        "status": "pending",
+        "username": username,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    return {"success": True, "payment_id": payment_id, "method": method}
+
+
+@app.post("/api/confirm_payment")
+async def confirm_payment(data: dict, session: str = Cookie(None)):
+    """Подтверждение оплаты (демо-режим)"""
+    username = get_current_user(session)
+    if not username:
+        return {"success": False, "error": "Не авторизован"}
+    
+    payment_id = data.get("payment_id")
+    
+    if not payment_id or payment_id not in PAYMENTS:
+        return {"success": False, "error": "Платёж не найден"}
+    
+    payment = PAYMENTS[payment_id]
+    payment["status"] = "completed"
+    payment["completed_at"] = datetime.now().isoformat()
+    
+    if username not in NOTIFICATIONS:
+        NOTIFICATIONS[username] = []
+    NOTIFICATIONS[username].append({
+        "id": len(NOTIFICATIONS[username]) + 1,
+        "icon": "💳",
+        "title": "Оплата прошла успешно",
+        "text": f"Оплата тура на сумму {payment['amount']:,} ₽ подтверждена. Демо-режим.",
+        "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "read": False
+    })
+    
+    if username not in BOOKINGS:
+        BOOKINGS[username] = []
+    BOOKINGS[username].append({
+        "destination": data.get("destination", ""),
+        "nights": data.get("nights", 0),
+        "start_date": data.get("start_date", ""),
+        "end_date": data.get("end_date", ""),
+        "hotel": data.get("hotel", ""),
+        "flight_there": data.get("flight_there", ""),
+        "flight_back": data.get("flight_back", ""),
+        "total_price": payment["amount"],
+        "payment_id": payment_id,
+        "payment_status": "completed"
+    })
+    
+    return {"success": True, "message": "Оплата успешно завершена (демо-режим)"}
+
+
+@app.get("/api/get_payment_status/{payment_id}")
+async def get_payment_status(payment_id: str, session: str = Cookie(None)):
+    username = get_current_user(session)
+    if not username:
+        return {"success": False, "error": "Не авторизован"}
+    
+    if payment_id not in PAYMENTS:
+        return {"success": False, "error": "Платёж не найден"}
+    
+    payment = PAYMENTS[payment_id]
+    if payment["username"] != username:
+        return {"success": False, "error": "Нет доступа"}
+    
+    return {"success": True, "status": payment["status"]}
+
+
+# ============= АВТОРИЗАЦИЯ =============
 
 @app.get("/login")
 async def login_page():
@@ -1983,24 +2557,25 @@ async def login_page():
             width: 100%;
             max-width: 440px;
             box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
+            transition: transform 0.2s;
         }
-        .auth-card h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; color: #0f172a; text-align: center; }
-        .auth-card .subtitle { color: #64748b; margin-bottom: 32px; font-size: 0.875rem; text-align: center; }
+        .auth-card:hover { transform: translateY(-4px); }
+        .auth-card h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; color: #0f172a; }
+        .auth-card .subtitle { color: #64748b; margin-bottom: 32px; font-size: 0.875rem; }
         .input-group { margin-bottom: 24px; }
         .input-group label { display: block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 8px; }
-        .input-group input { width: 100%; padding: 12px 16px; border: 1.5px solid #e2e8f0; border-radius: 16px; font-size: 0.875rem; outline: none; }
+        .input-group input { width: 100%; padding: 12px 16px; border: 1.5px solid #e2e8f0; border-radius: 16px; font-size: 0.875rem; transition: all 0.2s; outline: none; font-family: inherit; }
         .input-group input:focus { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }
-        .btn-auth { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 40px; font-size: 0.875rem; font-weight: 600; cursor: pointer; margin-top: 8px; }
+        .btn-auth { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 40px; font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-top: 8px; }
+        .btn-auth:hover { transform: translateY(-1px); box-shadow: 0 10px 20px -5px rgba(102,126,234,0.4); }
         .auth-footer { text-align: center; margin-top: 28px; font-size: 0.875rem; color: #64748b; }
         .auth-footer a { color: #667eea; text-decoration: none; font-weight: 600; }
-        .logo { text-align: center; margin-bottom: 24px; font-size: 2rem; font-weight: 700; }
-        .logo span { background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; background-clip: text; color: transparent; }
+        @media (max-width: 480px) { .auth-card { padding: 32px 24px; } .auth-card h2 { font-size: 1.5rem; } }
     </style>
 </head>
 <body>
     <div class="auth-card">
-        <div class="logo"><span>✈️</span> SmartTravel</div>
-        <h2>Добро пожаловать!</h2>
+        <h2>Добро пожаловать</h2>
         <div class="subtitle">Войдите в свой аккаунт</div>
         <form action="/login" method="POST">
             <div class="input-group"><label>Имя пользователя</label><input type="text" name="username" placeholder="Введите имя" required></div>
@@ -2013,13 +2588,14 @@ async def login_page():
 </html>
 ''')
 
+
 @app.post("/login")
 async def login(username: str = Form(...), password: str = Form(...)):
     hashed = hash_password(password)
     if username in USERS and USERS[username]["password"] == hashed:
         token = create_session_token(username)
-        resp = RedirectResponse(url="/", status_code=302)
-        resp.set_cookie(key="session", value=token, httponly=True, max_age=86400, secure=False, samesite="lax")
+        resp = RedirectResponse(url="/", status_code=303)
+        resp.set_cookie(key="session", value=token, httponly=True, max_age=86400)
         return resp
     return HTMLResponse('''
 <!DOCTYPE html>
@@ -2030,6 +2606,7 @@ a{color:#667eea;text-decoration:none}
 </style></head>
 <body><div class="card"><h2>Неверный логин или пароль</h2><a href="/login">Попробовать снова</a></div></body></html>
 ''')
+
 
 @app.get("/register")
 async def register_page():
@@ -2060,8 +2637,8 @@ async def register_page():
             max-width: 440px;
             box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
         }
-        .auth-card h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; color: #0f172a; text-align: center; }
-        .auth-card .subtitle { color: #64748b; margin-bottom: 32px; font-size: 0.875rem; text-align: center; }
+        .auth-card h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 8px; color: #0f172a; }
+        .auth-card .subtitle { color: #64748b; margin-bottom: 32px; font-size: 0.875rem; }
         .input-group { margin-bottom: 24px; }
         .input-group label { display: block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 8px; }
         .input-group input { width: 100%; padding: 12px 16px; border: 1.5px solid #e2e8f0; border-radius: 16px; font-size: 0.875rem; outline: none; }
@@ -2069,23 +2646,18 @@ async def register_page():
         .btn-auth { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 40px; font-size: 0.875rem; font-weight: 600; cursor: pointer; margin-top: 8px; }
         .auth-footer { text-align: center; margin-top: 28px; font-size: 0.875rem; color: #64748b; }
         .auth-footer a { color: #667eea; text-decoration: none; font-weight: 600; }
-        .logo { text-align: center; margin-bottom: 24px; font-size: 2rem; font-weight: 700; }
-        .logo span { background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; background-clip: text; color: transparent; }
-        .referral-info { background: linear-gradient(135deg, #fef3c7, #fde68a); padding: 12px; border-radius: 12px; margin-bottom: 20px; text-align: center; color: #92400e; font-size: 0.8rem; }
+        @media (max-width: 480px) { .auth-card { padding: 32px 24px; } }
     </style>
 </head>
 <body>
     <div class="auth-card">
-        <div class="logo"><span>✈️</span> SmartTravel</div>
         <h2>Создать аккаунт</h2>
         <div class="subtitle">Начните планировать путешествия</div>
-        <div id="referralInfo"></div>
         <form action="/register" method="POST" id="registerForm">
             <input type="hidden" name="ref" id="refCode" value="">
             <div class="input-group"><label>Имя пользователя</label><input type="text" name="username" placeholder="Придумайте имя" required></div>
             <div class="input-group"><label>Email</label><input type="email" name="email" placeholder="your@email.com" required></div>
             <div class="input-group"><label>Пароль</label><input type="password" name="password" placeholder="••••••••" required></div>
-            <div class="input-group"><label>Подтверждение пароля</label><input type="password" name="confirm_password" placeholder="••••••••" required></div>
             <button type="submit" class="btn-auth">Зарегистрироваться</button>
         </form>
         <div class="auth-footer">Уже есть аккаунт? <a href="/login">Войти</a></div>
@@ -2093,46 +2665,27 @@ async def register_page():
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const refCode = urlParams.get('ref');
-        if (refCode) {
+        if (refCode) {{
             document.getElementById('refCode').value = refCode;
-            document.getElementById('referralInfo').innerHTML = '<div class="referral-info">🎁 Вы регистрируетесь по приглашению! Получите 300 бонусов!</div>';
-        }
-        document.getElementById('registerForm')?.addEventListener('submit', function(e) {
-            const password = document.querySelector('input[name="password"]').value;
-            const confirm = document.querySelector('input[name="confirm_password"]').value;
-            if (password !== confirm) {
-                e.preventDefault();
-                alert('Пароли не совпадают!');
-            }
-        });
+        }}
     </script>
 </body>
 </html>
 ''')
 
+
 @app.post("/register")
-async def register(username: str = Form(...), email: str = Form(...), password: str = Form(...), confirm_password: str = Form(...), ref: str = Form("")):
-    if password != confirm_password:
-        return HTMLResponse('''
-        <!DOCTYPE html>
-        <html><head><title>Ошибка</title><style>
-        body{font-family:Segoe UI;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;justify-content:center;align-items:center;min-height:100vh}
-        .card{background:white;padding:40px;border-radius:24px;text-align:center}
-        a{color:#667eea;text-decoration:none}
-        </style></head>
-        <body><div class="card"><h2>❌ Пароли не совпадают</h2><a href="/register">Вернуться</a></div></body></html>
-        ''')
-    
+async def register(username: str = Form(...), email: str = Form(...), password: str = Form(...), ref: str = Form("")):
     if username in USERS:
         return HTMLResponse('''
-        <!DOCTYPE html>
-        <html><head><title>Ошибка</title><style>
-        body{font-family:Segoe UI;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;justify-content:center;align-items:center;min-height:100vh}
-        .card{background:white;padding:40px;border-radius:24px;text-align:center}
-        a{color:#667eea;text-decoration:none}
-        </style></head>
-        <body><div class="card"><h2>❌ Пользователь уже существует</h2><a href="/register">Вернуться</a></div></body></html>
-        ''')
+<!DOCTYPE html>
+<html><head><title>Ошибка</title><style>
+body{font-family:Segoe UI;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:white;padding:40px;border-radius:24px;text-align:center}
+a{color:#667eea;text-decoration:none}
+</style></head>
+<body><div class="card"><h2>Пользователь уже существует</h2><a href="/register">Попробовать другое имя</a></div></body></html>
+''')
     
     inviter = REFERRAL_LINKS.get(ref)
     if inviter and inviter in USERS:
@@ -2162,28 +2715,23 @@ async def register(username: str = Form(...), email: str = Form(...), password: 
     REFERRAL_LINKS[REFERRAL_CODES[username]] = username
     
     token = create_session_token(username)
-    resp = RedirectResponse(url="/", status_code=302)
-    resp.set_cookie(key="session", value=token, httponly=True, max_age=86400, secure=False, samesite="lax")
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie(key="session", value=token, httponly=True, max_age=86400)
     return resp
+
 
 @app.get("/logout")
 async def logout(session: str = Cookie(None)):
     remove_session(session)
-    resp = RedirectResponse(url="/", status_code=302)
+    resp = RedirectResponse(url="/", status_code=303)
     resp.delete_cookie("session")
     return resp
 
-@app.options("/{path:path}")
-async def options_handler(path: str):
-    return HTMLResponse(content="", status_code=200)
 
-# ============= ЗАПУСК =============
 if __name__ == "__main__":
     import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))
     print("=" * 50)
-    print("SmartTravel Builder запущен на Render")
-    print(f"http://0.0.0.0:{port}")
+    print("SmartTravel Builder запущен")
+    print("http://127.0.0.1:8000")
     print("=" * 50)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
